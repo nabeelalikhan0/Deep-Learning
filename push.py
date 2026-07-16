@@ -5,8 +5,8 @@ from datetime import datetime
 subprocess.run(["git", "add", "."], check=True)
 
 # Commit
-# commit_message = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-commit_message = input("Enter your commit:\n")
+commit_message = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+# commit_message = input("Enter your commit:\n")
 
 commit_result = subprocess.run(
     ["git", "commit", "-m", commit_message],
