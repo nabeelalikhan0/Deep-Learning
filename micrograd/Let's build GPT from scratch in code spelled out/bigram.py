@@ -10,6 +10,10 @@ eval_interval = 300
 device = "cuda" if torch.cuda.is_available() else "cpu"
 eval_iters = 200
 learning_rate = 1e-2
+n_embd = 384
+n_head = 6
+n_layer = 6
+dropout = 0.2
 # ---------------------------------
 
 torch.manual_seed(1337)
@@ -58,15 +62,48 @@ def estimate_loss():
     return out
 
 
+class Head(nn.Module):
+    def __init__(self,head_size):
+        super().__init__()
+        self.key = nn.Linear(n_embd, head_size,bias=False)
+        self.query = nn.Linear(n_embd, head_size,bias=False)
+        self.value = nn.Linear(n_embd, head_size,bias=False)
+        self.register_buffer("tril",torch.tril(torch.ones(block_size,block_size)))
+
+        def forward(self,x):
+            B,T,C = x.shape
+            k = self.key(x)
+            q = self.query(x)
+            # compute attention scores ("affinities")
+            wei = q@k.transpose(-2,-1) * C**-0.5 
+            wei = wei.masked_fill(self.tril[:T,:T]==0,float('-inf'))
+            # perform the softmax to get the probabilities
+            v = self.value(x)
+            out = wei @ v 
+            return out 
+
+
 class BigramLanguageModel(nn.Module):
     def __init__(self, vocab_size):
         super().__init__()
         # each token directly reads off the logtis for the next token from a lookup table
         self.token_embedding_table = nn.Embedding(vocab_size, vocab_size)
+        self.position_embedding_table = nn.Embedding(block_size,vocab_size)
+
+        self.sa_head = Head(n_embd)
+        self.lm_head = nn.Linear(n_embd,vocab_size)
+
 
     def forward(self, idx, target=None):
+        B,T = idx.shape
+
         # idx and targets are both (B,T) tensors of integers
-        logits = self.token_embedding_table(idx)  # (B,T,C)
+        tok_emb = self.token_embedding_table(idx)
+        pos_emb = self.position_embedding_table(torch.arange(T,device=device))
+        x = tok_emb + pos_emb # BTC
+        x = self.sa_head(x) # apply one head self attention
+        logits = self.lm_head(x) # B,T,vocab_size
+
         if target is None:
             loss = None
         else:
