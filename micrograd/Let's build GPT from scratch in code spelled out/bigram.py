@@ -3,13 +3,13 @@ from torch import nn
 import torch.nn.functional as F
 
 # hyperparams
-batch_size = 32
-block_size = 8
+batch_size = 64
+block_size = 256
 max_iters = 5000
 eval_interval = 500
+learning_rate = 3e-3
 device = "cuda" if torch.cuda.is_available() else "cpu"
 eval_iters = 200
-learning_rate = 1e-3
 n_embd = 384
 n_head = 6
 n_layer = 6
@@ -72,13 +72,17 @@ class Head(nn.Module):
         self.value = nn.Linear(n_embd, head_size,bias=False)
         self.register_buffer("tril",torch.tril(torch.ones(block_size,block_size)))
 
-        def forward(self,x):
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self,x):
             B,T,C = x.shape
             k = self.key(x)
             q = self.query(x)
             # compute attention scores ("affinities")
             wei = q@k.transpose(-2,-1) * C**-0.5 
             wei = wei.masked_fill(self.tril[:T,:T]==0,float('-inf'))
+            wei = F.softmax(wei,dim=-1)
+            wei = self.dropout(wei)
             # perform the softmax to get the probabilities
             v = self.value(x)
             out = wei @ v 
@@ -91,6 +95,7 @@ class MultiHeadAttention(nn.Module):
         super().__init__()
         self.heads = nn.ModuleList([Head(head_size) for _ in range(num_heads)])
         self.proj = nn.Linear(n_embd,n_embd)
+        self.dropout = nn.Dropout(dropout)
 
     def forward(self,x):
         out = torch.cat([h(x) for h in self.heads],dim=-1)
@@ -105,7 +110,8 @@ class FeedFoward(nn.Module):
         self.net = nn.Sequential(
             nn.Linear(n_embd,4*n_embd),
             nn.ReLU(),
-            nn.Linear(4*n_embd,n_embd)
+            nn.Linear(4*n_embd,n_embd),
+            nn.Dropout(dropout)
             
         )
 
@@ -123,28 +129,26 @@ class Block(nn.Module):
         head_size = n_embd//n_head
         self.sa = MultiHeadAttention(n_head,head_size)
         self.ffwd = FeedFoward(n_embd)
+        self.ln1 = nn.LayerNorm(n_embd)
+        self.ln2 = nn.LayerNorm(n_embd)
 
 
     def forward(self,x):
-        x = x + self.sa(x)
-        x = x + self.ffwd(x)
+        x = x + self.sa(self.ln1(x))
+        x = x + self.ffwd(self.ln2(x))
         return x
 
 class BigramLanguageModel(nn.Module):
     def __init__(self, vocab_size):
         super().__init__()
         # each token directly reads off the logtis for the next token from a lookup table
-        self.token_embedding_table = nn.Embedding(vocab_size, vocab_size)
-        self.position_embedding_table = nn.Embedding(block_size,vocab_size)
-        self.blocks = nn.Sequential(
-            Block(n_embd,n_head=4),
-            Block(n_embd,n_head=4),
-            Block(n_embd,n_head=4),
-        )
-
-        self.sa_head = MultiHeadAttention(4, n_embd//4) # 4 heads of 8 dimensional self-attention
-        self.ffwd = FeedFoward(n_embd) 
+        self.token_embedding_table = nn.Embedding(vocab_size, n_embd)
+        self.position_embedding_table = nn.Embedding(block_size,n_embd)
+        self.blocks = nn.Sequential(*[Block(n_embd,n_head=n_head) for _ in range(n_layer)] )
+        self.ln_f = nn.LayerNorm(n_embd)
         self.lm_head = nn.Linear(n_embd,vocab_size)
+        # self.sa_head = MultiHeadAttention(4, n_embd//4) # 4 heads of 8 dimensional self-attention
+        # self.ffwd = FeedFoward(n_embd) 
 
 
     def forward(self, idx, target=None):
@@ -154,8 +158,8 @@ class BigramLanguageModel(nn.Module):
         tok_emb = self.token_embedding_table(idx)
         pos_emb = self.position_embedding_table(torch.arange(T,device=device))
         x = tok_emb + pos_emb # BTC
-        x = self.sa_head(x) # apply one head self attention
-        x = self.ffwd(x)
+        x = self.blocks(x)
+        x = self.ln_f(x)
         logits = self.lm_head(x) # B,T,vocab_size
 
         if target is None:
@@ -205,4 +209,15 @@ for iter in range(max_iters):
     optimizer.step()
 
 context = torch.zeros((1, 1), dtype=torch.long, device=device)
-print(decode(m.generate(context, 500)[0].tolist()))
+
+# Generate 10,000 characters
+generated = m.generate(context, 100)[0].tolist()
+
+# Decode tokens into text
+generated_text = decode(generated)
+
+# Save to output.txt
+with open("output.txt", "w", encoding="utf-8") as file:
+    file.write(generated_text)
+
+print("Generated text saved to output.txt!")
